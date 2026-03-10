@@ -804,9 +804,9 @@ impl std::convert::TryFrom<url::Url> for MqttOptions {
             "mqtts" | "ssl" => (Transport::tls_with_default_config(), 8883),
             "mqtt" | "tcp" => (Transport::Tcp, 1883),
             #[cfg(feature = "websocket")]
-            "ws" => (Transport::Ws, 8000),
+            "ws" => (Transport::Ws, 80),
             #[cfg(all(feature = "use-rustls-no-provider", feature = "websocket"))]
-            "wss" => (Transport::wss_with_default_config(), 8000),
+            "wss" => (Transport::wss_with_default_config(), 443),
             _ => return Err(OptionError::Scheme),
         };
 
