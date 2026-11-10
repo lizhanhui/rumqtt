@@ -260,7 +260,9 @@ impl EventLoop {
         pending_throttle: Duration,
     ) -> Result<Request, ConnectionError> {
         if !pending.is_empty() {
-            time::sleep(pending_throttle).await;
+            if !pending_throttle.is_zero() {
+                time::sleep(pending_throttle).await;
+            }
             // We must call .next() AFTER sleep() otherwise .next() would
             // advance the iterator but the future might be canceled before return
             Ok(pending.pop_front().unwrap())
@@ -431,5 +433,57 @@ async fn mqtt_connect(
         }
         Incoming::ConnAck(connack) => Err(ConnectionError::ConnectionRefused(connack.code)),
         packet => Err(ConnectionError::NotConnAck(Box::new(packet))),
+    }
+}
+
+#[cfg(test)]
+mod throttle_tests {
+    use super::*;
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Poll, Wake, Waker},
+    };
+
+    struct NoopWake;
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    #[tokio::test]
+    async fn zero_throttle_returns_pending_request_without_yielding() {
+        let (_tx, rx) = bounded(1);
+        let mut pending = VecDeque::from([Request::PingReq, Request::Disconnect]);
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        {
+            let mut future = Box::pin(EventLoop::next_request(&mut pending, &rx, Duration::ZERO));
+            assert!(matches!(
+                future.as_mut().poll(&mut context),
+                Poll::Ready(Ok(Request::PingReq))
+            ));
+        }
+        assert!(matches!(pending.front(), Some(Request::Disconnect)));
+    }
+
+    #[tokio::test]
+    async fn nonzero_throttle_preserves_delay_and_cancellation() {
+        let (_tx, rx) = bounded(1);
+        let mut pending = VecDeque::from([Request::PingReq]);
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let delay = Duration::from_millis(10);
+        {
+            let mut future = Box::pin(EventLoop::next_request(&mut pending, &rx, delay));
+            assert!(future.as_mut().poll(&mut context).is_pending());
+        }
+        assert!(matches!(pending.front(), Some(Request::PingReq)));
+        let started = Instant::now();
+        assert!(matches!(
+            EventLoop::next_request(&mut pending, &rx, delay).await,
+            Ok(Request::PingReq)
+        ));
+        assert!(started.elapsed() >= delay);
+        assert!(pending.is_empty());
     }
 }
